@@ -39,24 +39,6 @@ adb -s <serial> shell cmd appops get --user 0 com.mumu.store SYSTEM_ALERT_WINDOW
 - 설정: `%LOCALAPPDATA%\MuMuAdBlocker\settings.json`
 - 로그: `%LOCALAPPDATA%\MuMuAdBlocker\logs\`
 
-## 빌드 방법
-
-요구 사항: .NET 8 SDK (Windows)
-
-```powershell
-cd src
-dotnet build -c Release
-```
-
-## 배포용 publish 명령 (self-contained single-file)
-
-```powershell
-cd src
-dotnet publish MuMuAdBlocker.csproj -c Release -r win-x64 -o ..\publish
-```
-
-결과: `publish\MuMuAdBlocker.exe` (단일 파일, .NET 런타임 포함 — 일반 Windows x64 PC에서 바로 실행 가능)
-
 ## 프로젝트 구조
 
 ```
