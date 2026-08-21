@@ -1,0 +1,12 @@
+## Build outputs
+bin/
+obj/
+publish/
+
+## IDE
+.vs/
+.vscode/
+*.user
+
+## Runtime artifacts
+*.log
