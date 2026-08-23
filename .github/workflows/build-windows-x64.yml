@@ -1,0 +1,42 @@
+name: Build Windows x64 EXE
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-windows-x64-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Publish Windows x64
+        shell: pwsh
+        run: dotnet publish .\src\MuMuAdBlocker.csproj -c Release -r win-x64 --self-contained true -o .\publish
+
+      - name: Verify EXE
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem .\publish\MuMuAdBlocker.exe -ErrorAction Stop
+          $exe | Format-Table Name, Length
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: MuMuAdBlocker-win-x64
+          path: publish/
+          if-no-files-found: error
