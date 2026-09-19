@@ -2,7 +2,7 @@ name: Build Windows x64 EXE
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'fix/**']
   workflow_dispatch:
 
 permissions:
@@ -15,6 +15,7 @@ concurrency:
 jobs:
   build:
     runs-on: windows-2022
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -24,15 +25,30 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
+      - name: Regression and native Windows scheduler tests
+        shell: pwsh
+        run: dotnet run --project .\tests\MuMuAdBlocker.Tests.csproj -c Release -p:TreatWarningsAsErrors=true
+
       - name: Publish Windows x64
         shell: pwsh
-        run: dotnet publish .\src\MuMuAdBlocker.csproj -c Release -r win-x64 --self-contained true -o .\publish
+        run: dotnet publish .\src\MuMuAdBlocker.csproj -c Release -r win-x64 --self-contained true -p:TreatWarningsAsErrors=true -o .\publish
 
       - name: Verify EXE
         shell: pwsh
         run: |
           $exe = Get-ChildItem .\publish\MuMuAdBlocker.exe -ErrorAction Stop
           $exe | Format-Table Name, Length
+
+      - name: Verify published one-time guard installation
+        shell: pwsh
+        run: .\tests\Test-PublishedGuard.ps1 -ExePath .\publish\MuMuAdBlocker.exe
+
+      - name: Checksums and usage
+        shell: pwsh
+        run: |
+          Copy-Item .\README.md .\publish\README.ko.md
+          $hash = (Get-FileHash .\publish\MuMuAdBlocker.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  MuMuAdBlocker.exe" | Set-Content .\publish\SHA256SUMS.txt -Encoding utf8
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v7

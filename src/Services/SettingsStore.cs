@@ -2,7 +2,6 @@ using System.Text.Json;
 
 namespace MuMuAdBlocker;
 
-/// <summary>%LOCALAPPDATA%\MuMuAdBlocker\settings.json 에 저장되는 사용자 설정</summary>
 public sealed class AppSettings
 {
     public string AdbPath { get; set; } = string.Empty;
@@ -12,31 +11,34 @@ public sealed class AppSettings
 
 public static class SettingsStore
 {
-    private static string Dir => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MuMuAdBlocker");
-    private static string FilePath => Path.Combine(Dir, "settings.json");
-
-    private static readonly JsonSerializerOptions Options = new() { WriteIndented = true };
+    public static string DirectoryPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MuMuAdBlocker");
+    private static string FilePath => Path.Combine(DirectoryPath, "settings.json");
+    public static string LogDirectory => Path.Combine(DirectoryPath, "logs");
 
     public static AppSettings Load()
     {
+        try { return File.Exists(FilePath) ? JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath)) ?? new() : new(); }
+        catch (IOException) { return new(); }
+        catch (JsonException) { return new(); }
+    }
+    public static void Save(AppSettings settings) => AtomicFile.Write(FilePath, JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true }));
+}
+
+public static class AtomicFile
+{
+    public static void Write(string path, string content)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            if (File.Exists(FilePath))
+            using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
-                var s = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath));
-                if (s is not null) return s;
+                using var writer = new StreamWriter(stream, new System.Text.UTF8Encoding(false), leaveOpen: true);
+                writer.Write(content); writer.Flush(); stream.Flush(flushToDisk: true);
             }
+            File.Move(temp, path, overwrite: true);
         }
-        catch { /* 손상된 설정은 무시하고 기본값 사용 */ }
-        return new AppSettings();
+        finally { if (File.Exists(temp)) File.Delete(temp); }
     }
-
-    public static void Save(AppSettings settings)
-    {
-        Directory.CreateDirectory(Dir);
-        File.WriteAllText(FilePath, JsonSerializer.Serialize(settings, Options));
-    }
-
-    public static string LogDirectory => Path.Combine(Dir, "logs");
 }

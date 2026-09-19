@@ -1,55 +1,84 @@
-# MuMuAdBlocker — MuMuPlayer 중앙 광고 제거 유틸리티
+# MuMuAdBlocker 1.1 — 한 번 설치하는 MuMu 광고 오버레이 자동 유지
 
-MuMuPlayer(Windows)의 `com.mumu.store` 가 띄우는 중앙 팝업 광고(`PopupAdWindow`, TYPE_APPLICATION_OVERLAY)를
-**ADB AppOps 최소 권한 변경**만으로 차단하는 Windows GUI 도구입니다.
+Windows MuMuPlayer의 `com.mumu.store`가 사용하는 `SYSTEM_ALERT_WINDOW` 권한을 차단하는 도구입니다. 기존의 수동 적용 기능에 **Windows 예약 작업 기반 자동 복구**를 추가했습니다.
 
-- APK 수정 / Launcher 교체 / Store 삭제 없음
-- Windows 관리자 권한 불필요
-- 단일 EXE, 설치 불필요
+**지원 범위:** 알려진 Store의 Android 오버레이 권한. 홈 화면 추천, 게임 내부 광고, Windows 쪽 광고, 향후 다른 패키지/표시 방식으로 바뀐 광고까지 제거하는 범용 도구는 아닙니다. “권한 확인 완료”는 실제 화면에 모든 광고가 사라졌다는 뜻이 아닙니다.
 
-## 사용 방법
+## 한 번 설정하고 사용하기
 
-1. MuMuPlayer 실행
-2. `MuMuAdBlocker.exe` 실행
-3. **[자동 찾기]** 으로 ADB 탐색 (실패 시 **[찾아보기...]** 로 `adb.exe` 직접 선택)
-4. MuMu 인스턴스 선택 (멀티 인스턴스 지원)
-5. **[중앙 광고 제거]** 클릭 → 상태가 "광고 오버레이 차단됨" 인지 확인
-6. 이미 떠 있는 광고는 X 버튼으로 닫거나 MuMu를 재시작
+1. Windows x64 배포본 `MuMuAdBlocker.exe`를 실행합니다. .NET 별도 설치는 필요 없습니다.
+2. MuMu의 ADB 디버깅을 켜고 MuMu 인스턴스를 실행합니다. 자동 탐색이 실패하면 ADB 파일 또는 `127.0.0.1:포트`를 지정합니다.
+3. **[자동 유지 설치·갱신]**을 한 번 누릅니다. 상태의 예약 작업 등록 여부와 실제 첫 점검 결과를 확인합니다.
+4. 창을 닫습니다. 이후 사용자가 이 프로그램을 매번 실행할 필요는 없습니다.
 
-ADB 연결이 안 되어 있으면 MuMu 설정 → 기타 → ADB 디버깅에서 포트를 확인한 뒤
-**수동 연결**에 `127.0.0.1:포트` 를 입력하고 **[연결]**.
+자동 유지는 현재 Windows 사용자가 로그인한 동안 **1분마다**, 그리고 로그인 후에 짧게 실행됩니다. MuMu가 실행되지 않았다면 ADB/에뮬레이터를 시작하지 않고 끝납니다. MuMu 실행 중 차단 권한이 풀리면 기존 상태를 백업한 뒤 다시 적용하고 읽어서 검증합니다. 새 로컬 인스턴스도 발견되면 같은 규칙으로 보호합니다.
 
-## 원복
+**상주 프로그램은 아니지만, 실행이 완전히 0회인 방식은 아닙니다.** Windows가 GUI 없는 점검 모드 `--guard-once`를 자동 실행합니다. 각 점검은 최대 45초, 예약 작업 강제 종료 제한은 50초이며 중복 실행은 차단합니다. 업데이트/부팅과 다음 점검 사이에는 광고가 잠깐 보일 수 있고 이미 표시된 창은 직접 닫아야 할 수 있습니다. ADB 비활성화·접근 차단·미지원 구조에서는 자동 적용되지 않습니다.
 
-**[기본값으로 복원]** 버튼으로 언제든 기본 상태로 되돌릴 수 있습니다.
+## 업데이트에 대응하는 방법
 
-## 내부 동작 (참고)
+고정된 MuMu 버전 번호로 지원 여부를 판단하지 않습니다.
 
+- 실행 중인 MuMu 경로, Windows 설치 정보, `MuMu*` 설치 폴더에서 ADB를 다시 찾습니다. 사용 중인 ADB를 우선 재사용해 다른 자동화 프로그램과의 충돌 가능성을 낮춥니다.
+- MuMu가 제공하는 **읽기 전용** `MuMuManager.exe info --vmindex all` 결과, 알려진 VM 설정 파일, 저장된 주소를 이용해 로컬 ADB 포트를 다시 찾습니다. 기본 포트는 실제로 로컬에서 열려 있을 때만 연결합니다.
+- 앱 버전이 바뀌어도 `com.mumu.store`와 오버레이 권한이 유지되면 초기화된 설정을 재적용합니다. 상태를 확인할 수 없으면 성공으로 오인하지 않고 변경을 보류합니다.
+- 다른 광고 패키지를 이름으로 추측해 끄거나 새로운 차단 규칙/실행 파일을 인터넷에서 자동 다운로드하지 않습니다. 광고 표시 방식 자체가 바뀌면 진단 후 이 도구의 새 버전이 필요할 수 있습니다.
+
+MuMuManager 조회 방식과 신형 `nx_main`/`MuMuNxDevice` 경로는 [MaaFramework의 실제 장치 탐색 구현](https://github.com/MaaXYZ/MaaFramework/blob/b8492836568adaabec434199405083ff29c47413/source/MaaToolkit/AdbDevice/AdbDeviceWin32Finder.cpp)을 확인했습니다. 특정 새 MuMu 버전에서 광고가 사라졌다는 실기기 검증을 대신하지는 않습니다.
+
+## 원복 및 제거
+
+**[자동 유지 해제]**는 예약 작업을 제거하고 자동 점검을 끕니다. 이미 적용된 차단 권한은 유지합니다.
+
+**[원래 권한 복원]**은 자동 유지를 끄고, 자동 유지 기능이 처음 변경하기 직전에 저장한 각 인스턴스의 원래 권한을 복원합니다. 포트/Android 식별자가 맞지 않거나 꺼져 있는 인스턴스의 백업은 삭제하지 않고 남깁니다. 해당 인스턴스를 연결한 후 다시 복원하십시오. 자동 유지 설치 전 이미 차단되어 있었고 이후 한 번도 변경하지 않은 인스턴스에는 이 기능이 만든 백업이 없습니다.
+
+기존 **[기본값으로 복원]**은 선택한 인스턴스를 Android의 `default` 모드로 돌립니다. 저장된 이전 값으로 복원하는 기능과 다릅니다. 자동 재차단을 막기 위해 이 버튼도 자동 유지를 먼저 해제합니다.
+
+복원/자동 유지 해제 후 `%LOCALAPPDATA%\MuMuAdBlocker` 폴더를 삭제하면 도구의 로컬 파일을 제거할 수 있습니다. 미복원 백업이 필요하면 먼저 보관하십시오. **예약 작업이 켜져 있는 동안 설치된 `guard-bin` 폴더를 삭제하지 마십시오.** 처음 다운로드한 EXE는 설치 후 이동해도 됩니다.
+
+## 안전 범위
+
+변경 대상은 로컬 ADB 주소 또는 에뮬레이터 serial이며, 알려진 Store 패키지와 Android 에뮬레이터 속성을 함께 확인합니다. USB 휴대폰/원격 Android 주소는 제외합니다. 자동 복구는 매번 대상과 권한을 재확인하며 이미 `ignore`/`deny`인 권한을 다시 쓰거나 더 약하게 바꾸지 않습니다.
+
+APK 수정, Store 삭제, Launcher 교체, 루팅, hosts/DNS/방화벽 변경, MuMu/게임 실행·강제 종료, ADB 서버 강제 종료는 수행하지 않습니다. 예약 작업은 현재 사용자·최소 권한·로그인 세션으로 등록하며 관리자 권한이나 암호를 요구하지 않습니다. 회사 정책에서 작업 스케줄러/ADB를 막으면 우회하지 않고 오류를 표시합니다.
+
+## 상태 및 진단
+
+`%LOCALAPPDATA%\MuMuAdBlocker\` 아래에 다음 파일을 저장합니다.
+
+| 경로 | 용도 |
+|---|---|
+| `settings.json` | 기존 GUI의 ADB/장치/주소 설정 |
+| `guard.json` | 자동 유지 설정, 변경 전 권한 및 인스턴스 식별자 백업 |
+| `guard-status.json` | 마지막 점검 시각, 실제 확인/복구/실패 수와 상태 |
+| `guard.log`, `guard.log.1` | 자동 점검/복원 로그. 파일당 약 1MiB에서 순환 |
+| `guard-bin/<해시>/MuMuAdBlocker.exe` | 원본 EXE 이동에 영향받지 않는 설치 사본 |
+| `logs/` | 기존 GUI 사용 로그 |
+
+예약 작업 이름은 `MuMuAdBlocker-Guard-<현재 사용자 SID>`입니다. [진단 정보 복사]에는 예약 작업 상태, 실제 AppOps 응답, HOME 앱과 Store/PopupAd 관련 창 정보가 포함됩니다. 로컬 장치 주소/앱 정보가 포함되므로 공개 게시 전 내용을 확인하십시오. 자동 외부 전송 기능은 없습니다.
+
+## 명령행
+
+```powershell
+.\MuMuAdBlocker.exe --install-guard  # 자동 유지 설치/갱신 + 첫 점검
+.\MuMuAdBlocker.exe --guard-once     # 설치된 자동 유지 설정에 따라 한 번 점검
+.\MuMuAdBlocker.exe --remove-guard   # 자동 유지 해제, 현재 권한 유지
+.\MuMuAdBlocker.exe --restore-saved  # 해제 후 연결된 인스턴스의 저장된 원래 권한 복원
+.\MuMuAdBlocker.exe --smoke-test     # 실행 가능 여부만 검사, 설정 변경 없음
 ```
-adb -s <serial> shell cmd appops set --user 0 com.mumu.store SYSTEM_ALERT_WINDOW ignore   # 차단
-adb -s <serial> shell cmd appops set --user 0 com.mumu.store SYSTEM_ALERT_WINDOW default  # 원복
-adb -s <serial> shell cmd appops get --user 0 com.mumu.store SYSTEM_ALERT_WINDOW          # 상태 확인
+
+명령행 모드는 창을 띄우지 않습니다. 점검 종료 코드는 0(정상/대기/비활성), 1(오류), 2(확인 필요), 3(점검 시간 제한), 64(잘못된 인자)입니다. 복원 후 남은 백업은 로그/GUI 결과를 확인하십시오. GUI 앱이므로 PowerShell 자동화에서 완료/종료 코드를 기다리려면 `Start-Process -Wait -PassThru`를 사용합니다.
+
+## 개발 및 검증
+
+```powershell
+dotnet run --project tests/MuMuAdBlocker.Tests.csproj -c Release
+dotnet publish src/MuMuAdBlocker.csproj -c Release -r win-x64 --self-contained true -o publish
+.\tests\Test-PublishedGuard.ps1 -ExePath .\publish\MuMuAdBlocker.exe
 ```
 
-적용 후에는 반드시 상태를 재조회하여 실제 결과를 검증합니다.
-`com.mumu.store` 가 없는 장치는 MuMu로 간주하지 않으며, 휴대폰 등 다른 Android 장치는 건드리지 않습니다.
+마지막 명령은 **기존 도구 데이터/MuMu가 없는 격리된 Windows 테스트 환경 전용**입니다. 임시 예약 작업과 테스트 데이터만 만들고 제거합니다.
 
-## 설정 / 로그 위치
+회귀 테스트는 가짜 ADB로 업데이트 후 권한 초기화, 재실행 멱등성, 원래 권한 복원, 다중 인스턴스, 알 수 없는 응답, USB/원격 제외, 명령 인자/시간 제한/취소, 설정 파일 손상/잠금을 검증합니다. Windows에서는 실제 예약 작업 등록·실행·삭제와 배포 EXE의 설치·갱신·사본 체크섬·예약 실행·해제를 추가 검증합니다. **시뮬레이션 테스트와 실제 MuMu의 광고 화면 검증은 구분해야 합니다.**
 
-- 설정: `%LOCALAPPDATA%\MuMuAdBlocker\settings.json`
-- 로그: `%LOCALAPPDATA%\MuMuAdBlocker\logs\`
-
-## 프로젝트 구조
-
-```
-/src
-    MuMuAdBlocker.csproj
-    app.manifest            (asInvoker — 관리자 권한 요구 없음)
-    Program.cs
-    MainForm.cs             (WinForms GUI)
-    Services/
-        AdbRunner.cs        (프로세스 실행, ArgumentList, timeout)
-        AdbLocator.cs       (ADB 자동 탐색)
-        MuMuManager.cs      (장치 탐색, AppOps 조회/설정/검증)
-        SettingsStore.cs    (설정 저장/로드)
-```
+Windows 예약 작업 동작은 [Microsoft RegisterTask 문서](https://learn.microsoft.com/en-us/windows/win32/taskschd/taskfolder-registertask)의 현재 사용자 InteractiveToken 방식에 따릅니다.
