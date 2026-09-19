@@ -157,6 +157,8 @@ internal static class Program
         object? service = null, root = null, task = null, running = null;
         try
         {
+            Yes(GuardTask.ReadXml(name) is null); // COM interop maps ERROR_FILE_NOT_FOUND to FileNotFoundException.
+            GuardTask.Delete(name); // Removing an absent task must also be idempotent.
             var command = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe");
             GuardTask.Register(name, GuardTask.BuildXml(command, GuardTask.UserSid, DateTime.Now.AddYears(1), "/c exit 0"));
             Yes(GuardTask.ReadXml(name) is not null);

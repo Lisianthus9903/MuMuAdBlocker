@@ -36,7 +36,7 @@ public static class GuardTask
             service = Connect(); root = ((dynamic)service).GetFolder("\\");
             task = ((dynamic)root).GetTask(name); return (string)((dynamic)task).Xml;
         }
-        catch (COMException ex) when (ex.HResult == unchecked((int)0x80070002) || ex.HResult == unchecked((int)0x8004130F)) { return null; }
+        catch (Exception ex) when (ex.HResult == unchecked((int)0x80070002) || ex.HResult == unchecked((int)0x8004130F)) { return null; }
         finally { Release(task); Release(root); Release(service); }
     }
 
@@ -60,7 +60,7 @@ public static class GuardTask
         {
             service = Connect(); root = ((dynamic)service).GetFolder("\\"); ((dynamic)root).DeleteTask(name, 0);
         }
-        catch (COMException ex) when (ex.HResult == unchecked((int)0x80070002) || ex.HResult == unchecked((int)0x8004130F)) { }
+        catch (Exception ex) when (ex.HResult == unchecked((int)0x80070002) || ex.HResult == unchecked((int)0x8004130F)) { }
         finally { Release(root); Release(service); }
     }
 
