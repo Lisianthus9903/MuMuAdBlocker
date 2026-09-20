@@ -1,4 +1,4 @@
-# MuMuAdBlocker 1.1.1 — 원본 삭제 후에도 계속되는 자동 유지
+# MuMuAdBlocker 1.1.2 — 기기 모델 변경 없이 자동 유지
 
 Windows MuMuPlayer의 `com.mumu.store`가 사용하는 `SYSTEM_ALERT_WINDOW` 권한을 차단하는 도구입니다. 기존의 수동 적용 기능에 **Windows 예약 작업 기반 자동 복구**를 추가했습니다.
 
@@ -28,6 +28,10 @@ Windows MuMuPlayer의 `com.mumu.store`가 사용하는 `SYSTEM_ALERT_WINDOW` 권
 - 다른 광고 패키지를 이름으로 추측해 끄거나 새로운 차단 규칙/실행 파일을 인터넷에서 자동 다운로드하지 않습니다. 광고 표시 방식 자체가 바뀌면 진단 후 이 도구의 새 버전이 필요할 수 있습니다.
 
 MuMuManager 조회 방식과 신형 `nx_main`/`MuMuNxDevice` 경로는 [MaaFramework의 실제 장치 탐색 구현](https://github.com/MaaXYZ/MaaFramework/blob/b8492836568adaabec434199405083ff29c47413/source/MaaToolkit/AdbDevice/AdbDeviceWin32Finder.cpp)을 확인했습니다. 특정 새 MuMu 버전에서 광고가 사라졌다는 실기기 검증을 대신하지는 않습니다.
+
+v1.1.2는 Samsung·Asus·Huawei·Tcl 등 휴대폰 모델로 표시되는 MuMu도 인식합니다. 관리 도구의 실시간 RPC 결과에서 Android/프로세스 실행 상태·오류 코드·로컬 주소를 확인하고, 보고된 PID가 같은 설치 폴더의 MuMu 인스턴스 프로세스인지 교차 확인합니다. 모델·브랜드 변경은 필요하지 않습니다.
+
+실행 인스턴스 목록이 확인되면 그 목록의 공식 ADB 주소만 점검하여 `emulator-N`·7555 같은 중복 별칭을 제외합니다. 알려진 실행 인스턴스의 연결 실패는 실패로 남깁니다. 구형 관리 도구에서는 기존 Android 에뮬레이터 속성 판별을 사용합니다. 저장된 주소·설정 파일·기본 포트만으로 기기 신원을 인정하지 않으며, 모델 속성에 MuMu 표시가 없는 대상은 검사 및 변경·복원 직전에 실시간 호스트 정보를 다시 확인합니다.
 
 ## 원복 및 제거
 
@@ -89,6 +93,8 @@ dotnet publish src/MuMuAdBlocker.csproj -c Release -r win-x64 --self-contained t
 
 회귀 테스트는 가짜 ADB로 업데이트 후 권한 초기화, 재실행 멱등성, 원래 권한 복원, 다중 인스턴스, 알 수 없는 응답, USB/원격 제외, 명령 인자/시간 제한/취소, 설정 파일 손상/잠금을 검증합니다. Windows에서는 배포 EXE로 설치·갱신·사본 체크섬·해제를 검사하고 **테스트 다운로드 폴더를 실제 삭제한 뒤 수동 예약 실행 및 실제 1분 반복 트리거 2회**를 별도로 관찰합니다. `guard-evidence.json`에 계정의 관리자 여부·실제 반복 시각·파일 해시를 남깁니다. 창 검사는 프로세스 창 핸들 관찰이며 재부팅·로그아웃·실제 광고 화면 검사를 대신하지 않습니다.
 
-이 버전의 사용자 PC 적용 및 실제 광고 효과는 아직 검증되지 않았습니다. 확인한 PC는 MuMu 6.4.7.0이고 자동 유지 작업이 없었으나, PC 도구의 폴더 승인 범위 제한으로 AppOps/화면 진단을 진행하지 못했습니다. 업데이트가 광고 재등장의 직접 원인인지는 미확인입니다. Windows CI의 관리자 계정 성공만으로 일반 사용자 설치까지 검증되었다고 볼 수 없습니다.
+v1.1.1 현장 검사에서 MuMu 6.4.7.0의 Samsung·Asus 프로필에 에뮬레이터 속성이 없어 정상 인스턴스를 거부하는 문제를 확인했습니다. v1.1.2의 읽기 전용 현장 검사는 두 인스턴스와 Store 12.1.12를 모델 변경 없이 인식했습니다. 적용 전 한 인스턴스는 이미 `ignore`, 다른 인스턴스는 `default`였으며 두 화면 모두 팝업이 없었습니다. 따라서 설치·권한 검사 성공과 실제 광고 발생 전후 효과는 구분해야 합니다.
+
+현장 읽기 전용 진단은 `dotnet run --project tests/MuMuAdBlocker.Tests.csproj -c Release -- --inspect-live`로 실행할 수 있습니다. 실행 중 MuMu와 기존 ADB를 조회하며 AppOps·설정·예약 작업을 변경하지 않습니다. 설치 통합 테스트는 계속 격리 CI 전용입니다.
 
 Windows 예약 작업 동작은 [Microsoft RegisterTask 문서](https://learn.microsoft.com/en-us/windows/win32/taskschd/taskfolder-registertask)의 현재 사용자 InteractiveToken 방식에 따릅니다.

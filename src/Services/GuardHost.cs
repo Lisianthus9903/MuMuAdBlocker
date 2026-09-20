@@ -32,7 +32,7 @@ public static class GuardHost
             if (!result.Success) throw new IOException("ADB 장치 조회 실패: " + result.Combined);
             var manager = new MuMuManager(adb, store.Log);
             var status = await new ProtectionGuard(manager, store).ReconcileAsync(
-                MuMuManager.ParseDeviceSerials(result.StdOut).ToArray(), state, deadline.Token);
+                await manager.SelectTargetSerialsAsync(result.StdOut, deadline.Token), state, deadline.Token);
             store.Status(status);
             return status.Failed > 0 ? 2 : 0;
         }

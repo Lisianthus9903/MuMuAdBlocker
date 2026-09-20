@@ -32,7 +32,7 @@ public sealed class MainForm : Form
 
     private void InitializeUi()
     {
-        Text = "MuMuPlayer 광고 오버레이 차단 · 1.1.1";
+        Text = "MuMuPlayer 광고 오버레이 차단 · 1.1.2";
         Font = new Font("맑은 고딕", 9.5f);
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(720, 700);
