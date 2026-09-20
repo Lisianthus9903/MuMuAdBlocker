@@ -121,6 +121,110 @@ internal static class Program
                 Eq(1, store.Load().Cursor);
             });
         });
+        await Test("package installation identity rejects unknown and failed output", () => {
+            Eq("10001/2026-09-19 12:00:00", MuMuManager.ParsePackageIdentity(new(0, "userId=10001\nfirstInstallTime=2026-09-19 12:00:00", "")));
+            Eq("10001/2026-09-19 12:00:00", MuMuManager.ParsePackageIdentity(new(0, "appId=10001\nfirstInstallTime=2026-09-19 12:00:00", "")));
+            Eq("", MuMuManager.ParsePackageIdentity(new(0, "userId=10001", "")));
+            Eq("", MuMuManager.ParsePackageIdentity(new(1, "userId=10001\nfirstInstallTime=2026-09-19 12:00:00", "")));
+            Eq("10001/correct", MuMuManager.ParsePackageIdentity(new(0, "appId=10001\nUser 10: installed=true\n firstInstallTime=wrong\nUser 0: installed=true\n firstInstallTime=correct", "")));
+            Eq("", MuMuManager.ParsePackageIdentity(new(0, "appId=10001\nUser 10: installed=true\n firstInstallTime=wrong", "")));
+            return Task.CompletedTask;
+        });
+        await Test("reinstallation and port reuse preserve separate original snapshots", async () => {
+            await Temp(async store => {
+                var adb = new FakeAdb(); var vm = adb.Add("127.0.0.1:16384", AppOpState.Allow);
+                var state = new GuardState { Enabled = true }; var engine = new ProtectionGuard(new(adb, _ => { }), store);
+                await engine.ReconcileAsync(adb.Serials, state);
+                vm.Installed = "2026-09-20 12:00:00"; vm.Mode = AppOpState.Default;
+                state.Enabled = false;
+                Eq(0, await engine.RestoreAsync(state)); Eq(1, state.Backups.Count);
+                state.Enabled = true;
+                Eq(1, (await engine.ReconcileAsync(adb.Serials, state)).Repaired); Eq(2, state.Backups.Count);
+                state.Enabled = false;
+                Eq(1, await engine.RestoreAsync(state)); Eq(AppOpState.Default, vm.Mode); Eq(1, state.Backups.Count);
+            });
+        });
+        await Test("legacy backup and unknown current mode are never blindly restored", async () => {
+            await Temp(async store => {
+                var adb = new FakeAdb(); var vm = adb.Add("127.0.0.1:16384", AppOpState.Allow);
+                var state = new GuardState();
+                state.Backups.Add("legacy", new GuardBackup { Serial = adb.Serials[0], AndroidId = vm.Id, OriginalMode = AppOpState.Default });
+                var engine = new ProtectionGuard(new(adb, _ => { }), store);
+                Eq(0, await engine.RestoreAsync(state));
+                Eq(1, (await engine.ReconcileAsync(adb.Serials, state)).Failed); Eq(0, adb.Sets); Eq(1, state.Backups.Count);
+                vm.Mode = AppOpState.Unknown;
+                Yes(!(await new MuMuManager(adb, _ => { }).SetAppOpAsync(adb.Serials[0], "ignore")).ok); Eq(0, adb.Sets);
+            });
+        });
+        await Test("per-instance time budget continues to a healthy VM", async () => {
+            await Temp(async store => {
+                var adb = new FakeAdb(); adb.Add("127.0.0.1:16384", AppOpState.Allow); adb.Add("127.0.0.1:16416", AppOpState.Allow);
+                adb.SlowSerial = adb.Serials[0];
+                var result = await new ProtectionGuard(new(adb, _ => { }), store, TimeSpan.FromMilliseconds(80)).ReconcileAsync(adb.Serials, new());
+                Eq(1, result.Failed); Eq(1, result.Repaired); Eq(1, adb.Sets);
+            });
+        });
+        await Test("disabled marker prevents mutations and retains original backup", async () => {
+            await Temp(async store => {
+                var adb = new FakeAdb(); adb.Add("127.0.0.1:16384", AppOpState.Allow);
+                var state = new GuardState { Enabled = true }; store.Save(state);
+                AtomicFile.Write(store.DisabledPath, "disabled");
+                Eq(0, (await new ProtectionGuard(new(adb, _ => { }), store).ReconcileAsync(adb.Serials, state)).Repaired); Eq(0, adb.Sets);
+            });
+        });
+        await Test("unchanged settings avoid rewrites; failures retain last successful check", async () => {
+            await Temp(store => {
+                var state = new GuardState(); store.Save(state);
+                File.SetLastWriteTimeUtc(store.StatePath, new DateTime(2020, 1, 1)); store.Save(state);
+                Eq(2020, File.GetLastWriteTimeUtc(store.StatePath).Year);
+                var then = DateTimeOffset.UtcNow.AddMinutes(-5);
+                store.Status(new(then, "권한 확인 완료", 1, 0, 0, ""));
+                store.Status(new(then.AddMinutes(1), "오류", 0, 0, 1, ""));
+                Eq<DateTimeOffset?>(then, store.ReadStatus()!.LastSuccessUtc);
+                Yes(store.StatusSummary().Contains("오래됨")); Yes(store.StatusSummary().Contains("오류"));
+                return Task.CompletedTask;
+            });
+        });
+        await Test("registration failure rolls back exact settings, task and shortcut", async () => {
+            await Temp(store => {
+                var old = new GuardState { Enabled = false, AdbPath = "old-adb", Endpoints = new() { "127.0.0.1:16384" } };
+                store.Save(old); var bytes = File.ReadAllText(store.StatePath);
+                AtomicFile.Write(store.DisabledPath, "disabled");
+                var task = "old task"; var link = "old shortcut";
+                Throws<IOException>(() => GuardTask.CommitConfiguration(store, new() { Enabled = true },
+                    () => { task = "new task"; link = "new shortcut"; throw new IOException("registration rejected"); },
+                    () => task = "old task", () => link = "old shortcut"));
+                Eq(bytes, File.ReadAllText(store.StatePath)); Eq("old task", task); Eq("old shortcut", link); Yes(store.IsDisabled);
+                File.Delete(store.StatePath);
+                Throws<IOException>(() => GuardTask.CommitConfiguration(store, new(), () => throw new IOException("failure")));
+                Yes(!File.Exists(store.StatePath)); return Task.CompletedTask;
+            });
+        });
+        await Test("rollback failure attempts remaining repairs and disables legacy guard", async () => {
+            await Temp(store => {
+                store.Save(new() { Enabled = true, AdbPath = "preserved" });
+                var restored = false;
+                Throws<AggregateException>(() => GuardTask.CommitConfiguration(store, new() { Enabled = true },
+                    () => throw new IOException("registration"), () => throw new IOException("rollback"), () => restored = true));
+                Yes(restored && store.IsDisabled && !store.Load().Enabled); Eq("preserved", store.Load().AdbPath);
+                return Task.CompletedTask;
+            });
+        });
+        await Test("direct manual deny remains deny without write", async () => {
+            var adb = new FakeAdb(); adb.Add("127.0.0.1:16384", AppOpState.Deny);
+            var result = await new MuMuManager(adb, _ => { }).SetAppOpAsync(adb.Serials[0], "ignore");
+            Yes(result.ok); Eq(AppOpState.Deny, result.finalState); Eq(0, adb.Sets);
+        });
+        await Test("changed VM config discovers a new port without broad scanning", async () => {
+            await Temp(async store => {
+                var config = Path.Combine(store.Root, "vms", "MuMuPlayer-0", "configs", "vm_config.json");
+                AtomicFile.Write(config, "{\"adb\":{\"host_port\":16416}}");
+                Yes(EndpointDiscovery.Find(new[] { store.Root }, Array.Empty<string>()).Contains("127.0.0.1:16416"));
+                AtomicFile.Write(config, "{\"adb\":{\"host_port\":16448}}");
+                var ports = EndpointDiscovery.Find(new[] { store.Root }, new[] { "127.0.0.1:16416" });
+                Yes(ports.Contains("127.0.0.1:16448")); await Task.CompletedTask;
+            });
+        });
         await Test("Task XML escapes paths, least privilege and minute interval without expiry", () => {
             var xml = XDocument.Parse(GuardTask.BuildXml(@"C:\Users\A&B\Guard\MuMuAdBlocker.exe", "S-1-5-21-123", new DateTime(2026, 9, 19, 13, 0, 0)));
             XNamespace ns = "http://schemas.microsoft.com/windows/2004/02/mit/task";
@@ -207,10 +311,12 @@ internal sealed class FakeAdb : IAdbRunner
     {
         public AppOpState Mode; public string Version = "6.4.7"; public bool Store = true, Emulator = true;
         public string Id = "0123456789abcdef";
+        public string Installed = "2026-09-19 12:00:00";
     }
     private readonly Dictionary<string, Vm> _vms = new();
     public IReadOnlyList<string> Serials => _vms.Keys.ToArray();
     public int Sets; public bool SetError, DropSet; public string? CancelSerial; public Action? BeforeSet;
+    public string? SlowSerial;
     public Vm Add(string serial, AppOpState mode) { var vm = new Vm { Mode = mode }; _vms.Add(serial, vm); return vm; }
     public Task<ProcessResult> RunAsync(IEnumerable<string> args, TimeSpan? timeout = null, CancellationToken ct = default)
     {
@@ -219,11 +325,12 @@ internal sealed class FakeAdb : IAdbRunner
         if (a[0] == "devices") return Ok("List of devices attached\n" + string.Join('\n', _vms.Keys.Select(s => s + "\tdevice")));
         if (a[0] == "connect") return Ok("connected");
         if (a[1] == CancelSerial) throw new OperationCanceledException();
+        if (a[1] == SlowSerial) return Slow(ct);
         if (!_vms.TryGetValue(a[1], out var vm)) return Task.FromResult(new ProcessResult(1, "", "offline"));
         var cmd = a[3];
         if (cmd.StartsWith("pm path")) return Ok(vm.Store ? "package:/system/app/MuMuStore.apk" : "");
         if (cmd == "getprop") return Ok(vm.Emulator ? "[ro.kernel.qemu]: [1]\n[ro.product.model]: [MuMu]" : "[ro.product.model]: [Pixel 9]");
-        if (cmd.StartsWith("dumpsys package")) return Ok("versionName=" + vm.Version + "\nversionCode=42");
+        if (cmd.StartsWith("dumpsys package")) return Ok("versionName=" + vm.Version + "\nversionCode=42\nuserId=10001\nfirstInstallTime=" + vm.Installed);
         if (cmd.Contains("appops get")) return Ok(vm.Mode == AppOpState.Unknown ? "Error: unknown future format" : "SYSTEM_ALERT_WINDOW: " + vm.Mode.ToString().ToLowerInvariant());
         if (cmd.Contains("appops set"))
         {
@@ -236,4 +343,5 @@ internal sealed class FakeAdb : IAdbRunner
         throw new Exception("Unexpected ADB command: " + string.Join(' ', a));
     }
     private static Task<ProcessResult> Ok(string text) => Task.FromResult(new ProcessResult(0, text, ""));
+    private static async Task<ProcessResult> Slow(CancellationToken ct) { await Task.Delay(30000, ct); return new(1, "", "timeout"); }
 }

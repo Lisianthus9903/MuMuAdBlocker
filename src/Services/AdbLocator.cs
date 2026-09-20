@@ -87,7 +87,15 @@ public static class AdbLocator
     {
         var candidates = new List<string>();
         // Reuse the running ADB implementation first to avoid client/server version conflicts with MAA.
-        foreach (var name in new[] { "adb", "adb_server" }) candidates.AddRange(ProcessPaths(name));
+        var running = new[] { "adb", "adb_server" }.SelectMany(ProcessPaths).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (running.Length > 0)
+        {
+            // An inaccessible running server may belong to MAA/elevated software. A mismatched
+            // fallback ADB can restart that server internally even without a kill-server command.
+            if (running.Any(string.IsNullOrWhiteSpace)) return null;
+            foreach (var path in running) if (await IsValidAsync(path, ct)) return path;
+            return null;
+        }
         if (!string.IsNullOrWhiteSpace(savedPath)) candidates.Add(savedPath);
         foreach (var root in GetInstallRoots(savedPath))
             foreach (var rel in new[] { "adb.exe", @"shell\adb.exe", @"nx_main\adb.exe", @"vmonitor\bin\adb_server.exe", @"emulator\nemu\vmonitor\bin\adb_server.exe" })

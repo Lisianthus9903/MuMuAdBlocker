@@ -41,7 +41,21 @@ jobs:
 
       - name: Verify published one-time guard installation
         shell: pwsh
-        run: .\tests\Test-PublishedGuard.ps1 -ExePath .\publish\MuMuAdBlocker.exe
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v1.1.0 --repo $env:GITHUB_REPOSITORY --pattern MuMuAdBlocker.exe --dir baseline
+          if ($LASTEXITCODE -ne 0) { throw 'Could not fetch baseline release' }
+          if ((Get-FileHash .\baseline\MuMuAdBlocker.exe).Hash.ToLowerInvariant() -ne 'ba0982957874412bec9c6eddb4abb53020121d4bce9a02261801fbb8f67cbd21') { throw 'Baseline release hash mismatch' }
+          .\tests\Test-PublishedGuard.ps1 -ExePath .\publish\MuMuAdBlocker.exe -PreviousExePath .\baseline\MuMuAdBlocker.exe -EvidencePath .\publish\guard-evidence.json
+
+      - name: Preserve validation evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: guard-validation-evidence
+          path: publish/guard-evidence.json
+          if-no-files-found: warn
 
       - name: Checksums and usage
         shell: pwsh
@@ -56,3 +70,34 @@ jobs:
           name: MuMuAdBlocker-win-x64
           path: publish/
           if-no-files-found: error
+
+  release:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: windows-2022
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Publish only a new version after all Windows checks pass
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [xml]$project = Get-Content .\src\MuMuAdBlocker.csproj
+          $version = @($project.Project.PropertyGroup.Version | Where-Object { $_ })[0]
+          $tag = "v$version"
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) { Write-Output "Release $tag already exists; never overwrite it"; exit 0 }
+          gh run download $env:GITHUB_RUN_ID --repo $env:GITHUB_REPOSITORY --name MuMuAdBlocker-win-x64 --dir release
+          if ($LASTEXITCODE -ne 0) { throw 'Artifact download failed' }
+          $hash = (Get-FileHash .\release\MuMuAdBlocker.exe).Hash.ToLowerInvariant()
+          if (-not (Get-Content .\release\SHA256SUMS.txt -Raw).Contains($hash)) { throw 'Artifact hash mismatch' }
+          $proof = Get-Content .\release\guard-evidence.json -Raw | ConvertFrom-Json
+          if ($proof.Result -ne 'passed' -or -not $proof.SourceDeleted -or $proof.AutomaticRuns.Count -ne 2 -or $proof.InstalledSha256 -ne $hash) { throw 'Missing source-deletion validation proof' }
+          $notes = Get-Content .\RELEASE_NOTES.md -Raw
+          $notes += "`n`nCommit: $env:GITHUB_SHA`nCI: https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID`nSHA-256: $hash`n"
+          $notes | Set-Content .\release-notes.txt -Encoding utf8
+          gh release create $tag .\release\MuMuAdBlocker.exe .\release\README.ko.md .\release\SHA256SUMS.txt .\release\guard-evidence.json --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "MuMuAdBlocker $tag — 원본 삭제 후 자동 유지 검증" --notes-file .\release-notes.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Release creation failed' }

@@ -9,6 +9,7 @@ public static class GuardHost
         {
             using var gate = store.TryLock();
             if (gate is null) return 0;
+            if (store.IsDisabled) return 0;
             var state = store.Load();
             if (!state.Enabled) return 0;
             if (!AdbLocator.IsMuMuRunning())
@@ -20,7 +21,7 @@ public static class GuardHost
             var adbPath = await AdbLocator.FindAsync(state.AdbPath, deadline.Token);
             if (adbPath is null)
             {
-                store.Status(new(DateTimeOffset.UtcNow, "확인 필요", 0, 0, 1, "ADB를 찾지 못함. MuMu 설치/ADB 설정 확인"));
+                store.Status(new(DateTimeOffset.UtcNow, "확인 필요", 0, 0, 1, "ADB를 찾지 못했거나 실행 중인 ADB 경로에 접근할 수 없음. 공유 ADB를 교체하지 않았습니다."));
                 return 2;
             }
             var adb = new AdbRunner(adbPath);
@@ -53,6 +54,7 @@ public static class GuardHost
         using var gate = store.TryLock() ?? throw new InvalidOperationException("다른 자동 점검이 진행 중입니다.");
         var state = store.Load();
         if (state.Enabled) throw new InvalidOperationException("자동 유지를 먼저 해제하십시오.");
+        if (state.Backups.Count == 0) return "저장된 원래 권한 백업이 없습니다. 변경하지 않았습니다.";
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(45));
         var path = await AdbLocator.FindAsync(state.AdbPath, deadline.Token) ?? throw new IOException("ADB를 찾지 못했습니다.");
         var adb = new AdbRunner(path);

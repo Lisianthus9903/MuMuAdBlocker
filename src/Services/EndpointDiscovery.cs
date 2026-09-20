@@ -81,14 +81,17 @@ public static class EndpointDiscovery
         var managers = roots.SelectMany(root => new[] { Path.Combine(root, "MuMuManager.exe"),
             Path.Combine(root, "nx_main", "MuMuManager.exe"), Path.Combine(root, "shell", "MuMuManager.exe") })
             .Distinct(StringComparer.OrdinalIgnoreCase).Where(File.Exists).Take(8);
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        budget.CancelAfter(TimeSpan.FromSeconds(8));
         foreach (var manager in managers)
         {
             ct.ThrowIfCancellationRequested();
             try
             {
-                var info = await AdbRunner.RunAsync(manager, new[] { "info", "--vmindex", "all" }, TimeSpan.FromSeconds(3), ct);
+                var info = await AdbRunner.RunAsync(manager, new[] { "info", "--vmindex", "all" }, TimeSpan.FromSeconds(3), budget.Token);
                 if (info.Success) foreach (var endpoint in ParseManagerInfo(info.StdOut)) result.Add(endpoint);
             }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested) { break; }
             catch (OperationCanceledException) { throw; }
             catch (TimeoutException) { }
             catch (System.ComponentModel.Win32Exception) { }
@@ -129,13 +132,16 @@ public static class EndpointDiscovery
     public static async Task ConnectAsync(IAdbRunner adb, IEnumerable<string> endpoints, CancellationToken ct)
     {
         var listeners = IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners();
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        budget.CancelAfter(TimeSpan.FromSeconds(6));
         foreach (var ep in endpoints.Select(Normalize).OfType<string>().Distinct().Take(128))
         {
             ct.ThrowIfCancellationRequested();
             var port = int.Parse(ep[(ep.LastIndexOf(':') + 1)..]);
             if (!listeners.Any(l => l.Port == port && (IPAddress.IsLoopback(l.Address) ||
                 l.Address.Equals(IPAddress.Any) || l.Address.Equals(IPAddress.IPv6Any)))) continue;
-            try { await adb.RunAsync(new[] { "connect", ep }, TimeSpan.FromSeconds(2), ct); }
+            try { await adb.RunAsync(new[] { "connect", ep }, TimeSpan.FromSeconds(2), budget.Token); }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested) { break; }
             catch (TimeoutException) { }
         }
     }

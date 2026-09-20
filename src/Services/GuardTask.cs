@@ -5,6 +5,8 @@ using System.Security;
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Xml.Linq;
+using System.Diagnostics;
+using System.Text.Json;
 
 namespace MuMuAdBlocker;
 
@@ -15,6 +17,7 @@ public static class GuardTask
     public static string UserSid => WindowsIdentity.GetCurrent().User?.Value ?? throw new InvalidOperationException("Windows 사용자 식별 실패");
     [SupportedOSPlatform("windows")]
     public static string TaskName => "MuMuAdBlocker-Guard-" + UserSid;
+    public static string ShortcutPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), "MuMuAdBlocker.lnk");
     [SupportedOSPlatform("windows")]
     private static dynamic Connect()
     {
@@ -95,8 +98,9 @@ public static class GuardTask
         var store = new GuardStore();
         using var gate = store.TryLock() ?? throw new InvalidOperationException("자동 점검이 진행 중입니다. 점검 종료 후 다시 시도하십시오.");
         var original = store.Load();
-        var before = System.Text.Json.JsonSerializer.Serialize(original);
         var oldXml = ReadXml(TaskName);
+        var oldShortcut = File.Exists(ShortcutPath) ? File.ReadAllBytes(ShortcutPath) : null;
+        if (Directory.Exists(ShortcutPath)) throw new IOException("관리 바로가기 위치에 폴더가 있어 설치할 수 없습니다.");
         var source = Environment.ProcessPath ?? throw new InvalidOperationException("실행 파일 경로 확인 실패");
         if (!Path.GetFileName(source).Equals("MuMuAdBlocker.exe", StringComparison.OrdinalIgnoreCase) ||
             File.Exists(Path.Combine(AppContext.BaseDirectory, "MuMuAdBlocker.runtimeconfig.json")))
@@ -112,29 +116,137 @@ public static class GuardTask
         }
         using (var file = File.OpenRead(destination))
             if (Convert.ToHexString(SHA256.HashData(file)) != hash) throw new IOException("자동 유지 실행 파일 검증 실패");
+        // Actually execute the installed single EXE via the same Windows scheduler/principal.
+        // This probe never touches Android or requires the guard lock held by this installer.
+        VerifyScheduledExecutable(destination);
         original.AdbPath = settings.AdbPath;
         var endpoint = EndpointDiscovery.Normalize(settings.LastEndpoint);
         if (endpoint is not null && !original.Endpoints.Contains(endpoint)) original.Endpoints.Add(endpoint);
         original.Enabled = true;
-        try
+        CommitConfiguration(store, original, () =>
         {
-            store.Save(original);
             Register(TaskName, BuildXml(destination, UserSid, DateTime.Now.AddMinutes(1)));
             var registered = ReadXml(TaskName) ?? throw new IOException("예약 작업 등록 확인 실패");
             XNamespace ns = "http://schemas.microsoft.com/windows/2004/02/mit/task";
             var xml = XDocument.Parse(registered);
             if (xml.Descendants(ns + "Command").Single().Value != destination ||
-                xml.Descendants(ns + "Arguments").Single().Value != "--guard-once") throw new IOException("예약 작업 실행 경로 검증 실패");
-            store.Log("자동 유지 설치 완료: " + destination);
-            return destination;
+                xml.Descendants(ns + "Arguments").Single().Value != "--guard-once" ||
+                xml.Descendants(ns + "WorkingDirectory").Single().Value != Path.GetDirectoryName(destination) ||
+                xml.Descendants(ns + "RunLevel").Single().Value != "LeastPrivilege" ||
+                xml.Descendants(ns + "Settings").Single().Element(ns + "Enabled")?.Value != "true")
+                throw new IOException("예약 작업 실행 구성 검증 실패");
+            WriteShortcut(destination);
+        },
+        () => { if (oldXml is not null) Register(TaskName, oldXml); else Delete(TaskName); },
+        () => { if (oldShortcut is null) File.Delete(ShortcutPath); else File.WriteAllBytes(ShortcutPath, oldShortcut); });
+        store.Log("자동 유지 설치 완료: " + destination);
+        return destination;
+    }
+
+    internal static void CommitConfiguration(GuardStore store, GuardState state, Action activate, params Action[] rollback)
+    {
+        var before = File.Exists(store.StatePath) ? File.ReadAllText(store.StatePath) : null;
+        var wasDisabled = store.IsDisabled;
+        try
+        {
+            store.Save(state);
+            activate();
+            File.Delete(store.DisabledPath);
         }
         catch (Exception installError)
         {
-            AtomicFile.Write(store.StatePath, before);
-            try { if (oldXml is not null) Register(TaskName, oldXml); else Delete(TaskName); }
-            catch (Exception rollbackError) { throw new AggregateException("예약 작업 설치 및 복구에 실패했습니다. 자동 유지 상태를 확인하십시오.", installError, rollbackError); }
+            var errors = new List<Exception> { installError };
+            // Attempt each rollback independently, even if one part cannot be restored.
+            void Restore(Action action) { try { action(); } catch (Exception e) { errors.Add(e); } }
+            Restore(() => { if (before is null) File.Delete(store.StatePath); else AtomicFile.Write(store.StatePath, before); });
+            foreach (var action in rollback) Restore(action);
+            Restore(() => { if (wasDisabled) AtomicFile.Write(store.DisabledPath, "disabled"); else File.Delete(store.DisabledPath); });
+            if (errors.Count > 1)
+            {
+                AtomicFile.Write(store.DisabledPath, "installation rollback incomplete");
+                // Older installed versions do not know the stop marker. Disable the JSON flag too.
+                var disabled = store.Load(); disabled.Enabled = false; store.Save(disabled);
+                throw new AggregateException("설치 복구 일부 실패. 자동 변경을 중지했습니다. 설정/백업은 보존하십시오.", errors);
+            }
             throw;
         }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void VerifyScheduledExecutable(string executable)
+    {
+        var name = "MuMuAdBlocker-Probe-" + Guid.NewGuid().ToString("N");
+        object? service = null, root = null, task = null, running = null;
+        try
+        {
+            Register(name, BuildXml(executable, UserSid, DateTime.Now.AddYears(1), "--smoke-test"));
+            service = Connect(); root = ((dynamic)service).GetFolder("\\"); task = ((dynamic)root).GetTask(name);
+            var before = (DateTime)((dynamic)task).LastRunTime;
+            running = ((dynamic)task).Run(null);
+            var watch = Stopwatch.StartNew();
+            while (watch.Elapsed < TimeSpan.FromSeconds(20))
+            {
+                Thread.Sleep(100);
+                if ((DateTime)((dynamic)task).LastRunTime > before && (int)((dynamic)task).State != 4)
+                {
+                    if ((int)((dynamic)task).LastTaskResult != 0) throw new IOException("설치 사본 예약 실행 실패");
+                    return;
+                }
+            }
+            throw new TimeoutException("설치 사본 예약 실행 확인 시간 초과");
+        }
+        finally
+        {
+            // Only our disposable probe instance may be stopped, never the shared guard/ADB/game.
+            if (running is not null && task is not null)
+                try { if ((int)((dynamic)task).State == 4) ((dynamic)running).Stop(); } catch (COMException) { }
+            Release(running); Release(task); Release(root); Release(service);
+            Delete(name);
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void WriteShortcut(string destination)
+    {
+        object? shell = null, link = null;
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(ShortcutPath)!);
+            shell = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell")!)!;
+            link = ((dynamic)shell).CreateShortcut(ShortcutPath);
+            ((dynamic)link).TargetPath = destination;
+            ((dynamic)link).Arguments = "";
+            ((dynamic)link).WorkingDirectory = Path.GetDirectoryName(destination)!;
+            ((dynamic)link).Description = "MuMuAdBlocker 자동 유지 관리 · 해제 · 원래 권한 복원";
+            ((dynamic)link).Save();
+            Release(link); link = ((dynamic)shell).CreateShortcut(ShortcutPath);
+            if ((string)((dynamic)link).TargetPath != destination || !File.Exists(ShortcutPath))
+                throw new IOException("관리 바로가기 확인 실패");
+        }
+        finally { Release(link); Release(shell); }
+    }
+
+    [SupportedOSPlatform("windows")]
+    public static string InstallationSummary()
+    {
+        var store = new GuardStore();
+        if (store.IsDisabled || !store.Load().Enabled) return "자동 유지 꺼짐";
+        var xml = ReadXml(TaskName);
+        if (xml is null) return "예약 작업 없음 / 재설치 필요";
+        XNamespace ns = "http://schemas.microsoft.com/windows/2004/02/mit/task";
+        var task = XDocument.Parse(xml);
+        var command = task.Descendants(ns + "Command").SingleOrDefault()?.Value;
+        if (command is null || !File.Exists(command)) return "설치 사본 없음 / 재설치 필요";
+        var full = Path.GetFullPath(command);
+        var prefix = Path.GetFullPath(Path.Combine(store.Root, "guard-bin")) + Path.DirectorySeparatorChar;
+        if (!full.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ||
+            task.Descendants(ns + "Arguments").SingleOrDefault()?.Value != "--guard-once" ||
+            task.Descendants(ns + "Settings").Single().Element(ns + "Enabled")?.Value != "true")
+            return "자동 실행 구성 오류 / 재설치 필요";
+        using var file = File.OpenRead(full);
+        var hash = Convert.ToHexString(SHA256.HashData(file));
+        if (Path.GetFileName(Path.GetDirectoryName(full)) != hash[..16]) return "설치 사본 손상 / 재설치 필요";
+        return "자동 유지 설치됨 (광고 화면 효과는 별도 확인)";
     }
 
     [SupportedOSPlatform("windows")]
@@ -142,7 +254,10 @@ public static class GuardTask
     {
         var store = new GuardStore();
         using var gate = store.TryLock() ?? throw new InvalidOperationException("자동 점검이 진행 중입니다. 점검 종료 후 다시 시도하십시오.");
-        var state = store.Load(); state.Enabled = false; store.Save(state);
+        AtomicFile.Write(store.DisabledPath, "disabled");
+        try { var state = store.Load(); state.Enabled = false; store.Save(state); }
+        catch (Exception ex) when (ex is JsonException or InvalidDataException)
+        { store.Log("설정/백업 손상: 원본을 보존하고 중지 표시 및 예약 작업 해제로 자동 유지를 중단합니다."); }
         Delete(TaskName); // If deletion fails, Enabled=false still prevents further mutations.
         store.Status(new(DateTimeOffset.UtcNow, "자동 유지 해제", 0, 0, 0, "현재 권한은 유지. 원래 권한 복원은 별도 기능 사용"));
     }

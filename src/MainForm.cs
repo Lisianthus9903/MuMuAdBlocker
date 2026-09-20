@@ -32,7 +32,7 @@ public sealed class MainForm : Form
 
     private void InitializeUi()
     {
-        Text = "MuMuPlayer 광고 오버레이 차단 · 1.1";
+        Text = "MuMuPlayer 광고 오버레이 차단 · 1.1.1";
         Font = new Font("맑은 고딕", 9.5f);
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(720, 700);
@@ -148,10 +148,13 @@ public sealed class MainForm : Form
         _btnDiag.Click += async (_, _) => await CopyDiagnosticsAsync();
         _btnGuard.Click += async (_, _) => await RunBusyAsync(async () =>
         {
-            GuardTask.Install(_settings);
+            var installed = GuardTask.Install(_settings);
             await GuardHost.RunOnceAsync();
             UpdateGuardStatus();
             Log("자동 유지 설치/갱신 완료. 최초 점검 결과: " + new GuardStore().StatusSummary());
+            MessageBox.Show(this, "설치 사본과 예약 실행 검사를 통과했습니다. 다운로드한 원본 EXE·ZIP·압축 해제 폴더는 삭제해도 됩니다.\n\n" +
+                "시작 메뉴의 MuMuAdBlocker에서 자동 유지 해제·원래 권한 복원을 사용할 수 있습니다.\n설치 데이터는 삭제하지 마십시오:\n" + installed +
+                "\n\n첫 점검: " + new GuardStore().StatusSummary(), "자동 유지 설치됨", MessageBoxButtons.OK, MessageBoxIcon.Information);
         });
         _btnUnGuard.Click += async (_, _) => await RunBusyAsync(() =>
         {
@@ -396,7 +399,7 @@ public sealed class MainForm : Form
         if (dev is null || _manager is null) { ShowError("MuMu 없음", "대상 MuMu 인스턴스를 먼저 선택하십시오."); return; }
 
         var (state, _) = await _manager.GetAppOpStateAsync(dev.Serial);
-        if (state == AppOpState.Ignore)
+        if (state is AppOpState.Ignore or AppOpState.Deny)
         {
             Log("이미 광고 차단 상태입니다.");
             SetStatus(_lblAd, MuMuManager.Describe(state), Color.Green);
@@ -502,9 +505,7 @@ public sealed class MainForm : Form
         try
         {
             var store = new GuardStore();
-            var enabled = store.Load().Enabled;
-            var registered = GuardTask.ReadXml(GuardTask.TaskName) is not null;
-            _lblGuard.Text = (enabled && registered ? "자동 점검 등록 · " : enabled ? "예약 작업 없음 / 재설치 필요 · " : "자동 유지 꺼짐 · ") + store.StatusSummary();
+            _lblGuard.Text = GuardTask.InstallationSummary() + " · " + store.StatusSummary();
         }
         catch (Exception ex) { _lblGuard.Text = "자동 유지 상태 확인 실패: " + ex.Message; }
     }

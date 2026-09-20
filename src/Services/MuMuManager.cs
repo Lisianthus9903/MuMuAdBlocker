@@ -6,6 +6,7 @@ public enum AppOpState { Unknown, Default, Allow, Ignore, Deny }
 public sealed record MuMuDevice(string Serial, bool StoreFound, string VersionName, string VersionCode, AppOpState OpState, string RawOpOutput)
 {
     public bool IsMuMu => StoreFound;
+    public string PackageIdentity { get; init; } = "";
 }
 
 /// <summary>Only local emulators with the known Store package are eligible. No version pinning.</summary>
@@ -44,9 +45,25 @@ public sealed class MuMuManager
         if (!path.Success || !Regex.IsMatch(path.StdOut, @"(?m)^package:/")) return null;
         var props = await Shell(serial, "getprop", ct);
         if (!props.Success || !IsEmulator(props.StdOut)) return null;
-        var (name, code) = await GetStoreVersionAsync(serial, ct);
+        var package = await Shell(serial, $"dumpsys package {StorePackage}", ct);
+        var name = Regex.Match(package.StdOut, @"versionName=(\S+)");
+        var code = Regex.Match(package.StdOut, @"versionCode=(\d+)");
         var (state, raw) = await GetAppOpStateAsync(serial, ct);
-        return new(serial, true, name, code, state, raw);
+        return new(serial, true, name.Success ? name.Groups[1].Value : "?", code.Success ? code.Groups[1].Value : "?", state, raw)
+        { PackageIdentity = ParsePackageIdentity(package) };
+    }
+
+    public static string ParsePackageIdentity(ProcessResult result)
+    {
+        if (!result.Success || HasCommandError(result.Combined)) return "";
+        var uid = Regex.Match(result.StdOut, @"(?m)^\s*(?:userId|appId)=(\d+)\b");
+        // New Android dumps this per user; older releases print it before the user sections.
+        var userZero = Regex.Match(result.StdOut, @"(?ms)^[ \t]*User 0:.*?(?=^[ \t]*User \d+:|\z)");
+        var users = Regex.Match(result.StdOut, @"(?m)^[ \t]*User \d+:");
+        var global = users.Success ? result.StdOut[..users.Index] : result.StdOut;
+        var installed = Regex.Match(userZero.Value, @"(?m)^[ \t]*firstInstallTime=([^\r\n]+)");
+        if (!installed.Success) installed = Regex.Match(global, @"(?m)^[ \t]*firstInstallTime=([^\r\n]+)");
+        return uid.Success && installed.Success ? uid.Groups[1].Value + "/" + installed.Groups[1].Value.Trim() : "";
     }
 
     public static bool IsEmulator(string props) => Regex.IsMatch(props,
@@ -93,7 +110,7 @@ public sealed class MuMuManager
         return (ParseAppOp(r), r.Combined.Trim());
     }
 
-    public async Task<(bool ok, AppOpState finalState, string message)> SetAppOpAsync(string serial, string mode, CancellationToken ct = default)
+    public async Task<(bool ok, AppOpState finalState, string message)> SetAppOpAsync(string serial, string mode, CancellationToken ct = default, string? expectedPackageIdentity = null)
     {
         var expected = mode switch
         {
@@ -101,7 +118,12 @@ public sealed class MuMuManager
             "allow" => AppOpState.Allow, "deny" => AppOpState.Deny,
             _ => throw new ArgumentException("지원하지 않는 AppOps 모드입니다.", nameof(mode))
         };
-        if (await InspectAsync(serial, ct) is null) return (false, AppOpState.Unknown, "지원 대상 MuMu를 확인하지 못해 변경하지 않았습니다.");
+        var device = await InspectAsync(serial, ct);
+        if (device is null || device.OpState == AppOpState.Unknown ||
+            (expectedPackageIdentity is not null && device.PackageIdentity != expectedPackageIdentity))
+            return (false, AppOpState.Unknown, "지원 대상·현재 권한·패키지 식별을 확인하지 못해 변경하지 않았습니다.");
+        if (device.OpState == expected || (mode == "ignore" && device.OpState == AppOpState.Deny))
+            return (true, device.OpState, "이미 적용된 권한 유지: " + Describe(device.OpState));
         _log($"{serial}: {AppOpName} → {mode}");
         var set = await Shell(serial, $"cmd appops set --user 0 {StorePackage} {AppOpName} {mode}", ct);
         if (!set.Success || HasCommandError(set.Combined)) return (false, AppOpState.Unknown, "AppOps 설정 실패: " + set.Combined.Trim());

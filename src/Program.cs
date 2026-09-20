@@ -22,7 +22,7 @@ internal static class Program
                     case "--restore-saved":
                         GuardTask.Disable();
                         new GuardStore().Log(GuardHost.RestoreSavedAsync().GetAwaiter().GetResult());
-                        return 0;
+                        return new GuardStore().Load().Backups.Count == 0 ? 0 : 2;
                     default: return 64;
                 }
             }
