@@ -44,9 +44,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download v1.1.0 --repo $env:GITHUB_REPOSITORY --pattern MuMuAdBlocker.exe --dir baseline
+          gh release download v1.1.1 --repo $env:GITHUB_REPOSITORY --pattern MuMuAdBlocker.exe --dir baseline
           if ($LASTEXITCODE -ne 0) { throw 'Could not fetch baseline release' }
-          if ((Get-FileHash .\baseline\MuMuAdBlocker.exe).Hash.ToLowerInvariant() -ne 'ba0982957874412bec9c6eddb4abb53020121d4bce9a02261801fbb8f67cbd21') { throw 'Baseline release hash mismatch' }
+          if ((Get-FileHash .\baseline\MuMuAdBlocker.exe).Hash.ToLowerInvariant() -ne 'fd1daefb04653289081997402ef92aa78d4b769aeb44102b3b0ff66e3008eba7') { throw 'Baseline release hash mismatch' }
           .\tests\Test-PublishedGuard.ps1 -ExePath .\publish\MuMuAdBlocker.exe -PreviousExePath .\baseline\MuMuAdBlocker.exe -EvidencePath .\publish\guard-evidence.json
 
       - name: Preserve validation evidence even on failure
