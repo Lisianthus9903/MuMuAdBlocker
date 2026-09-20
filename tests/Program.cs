@@ -248,6 +248,20 @@ internal static class Program
             Yes(!xml.Descendants(ns + "EndBoundary").Any() && !xml.Descendants(ns + "Duration").Any());
             return Task.CompletedTask;
         });
+        await Test("scheduler normalized XML honors omitted defaults but rejects disabled/elevated tasks", () => {
+            var path = Path.GetFullPath("MuMuAdBlocker.exe");
+            var xml = XDocument.Parse(GuardTask.BuildXml(path, "S-1-5-21-123", DateTime.Now));
+            XNamespace ns = "http://schemas.microsoft.com/windows/2004/02/mit/task";
+            xml.Descendants(ns + "RunLevel").Single().Remove();
+            xml.Descendants(ns + "Settings").Single().Element(ns + "Enabled")!.Remove();
+            Yes(GuardTask.ValidateRegistrationXml(xml.ToString(), path));
+            xml.Descendants(ns + "Settings").Single().Add(new XElement(ns + "Enabled", "false"));
+            Yes(!GuardTask.ValidateRegistrationXml(xml.ToString(), path));
+            xml.Descendants(ns + "Settings").Single().Element(ns + "Enabled")!.Remove();
+            xml.Descendants(ns + "Principal").Single().Add(new XElement(ns + "RunLevel", "HighestAvailable"));
+            Yes(!GuardTask.ValidateRegistrationXml(xml.ToString(), path));
+            return Task.CompletedTask;
+        });
         await Test("process arguments are literal and UTF-8 streams are preserved", async () => {
             var text = "한글 ; echo nope & \"quoted\"";
             var result = await AdbRunner.RunAsync(Environment.ProcessPath!, new[] { "--fixture-echo", text }, TimeSpan.FromSeconds(5));
@@ -278,6 +292,7 @@ internal static class Program
             var command = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "cmd.exe");
             GuardTask.Register(name, GuardTask.BuildXml(command, GuardTask.UserSid, DateTime.Now.AddYears(1), "/c exit 0"));
             Yes(GuardTask.ReadXml(name) is not null);
+            Yes(GuardTask.ValidateRegistrationXml(GuardTask.ReadXml(name)!, command, "/c exit 0"));
             service = Activator.CreateInstance(Type.GetTypeFromProgID("Schedule.Service")!)!;
             ((dynamic)service).Connect(); root = ((dynamic)service).GetFolder("\\"); task = ((dynamic)root).GetTask(name);
             running = ((dynamic)task).Run(null);

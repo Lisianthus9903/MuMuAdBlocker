@@ -127,13 +127,7 @@ public static class GuardTask
         {
             Register(TaskName, BuildXml(destination, UserSid, DateTime.Now.AddMinutes(1)));
             var registered = ReadXml(TaskName) ?? throw new IOException("예약 작업 등록 확인 실패");
-            XNamespace ns = "http://schemas.microsoft.com/windows/2004/02/mit/task";
-            var xml = XDocument.Parse(registered);
-            if (xml.Descendants(ns + "Command").Single().Value != destination ||
-                xml.Descendants(ns + "Arguments").Single().Value != "--guard-once" ||
-                xml.Descendants(ns + "WorkingDirectory").Single().Value != Path.GetDirectoryName(destination) ||
-                xml.Descendants(ns + "RunLevel").Single().Value != "LeastPrivilege" ||
-                xml.Descendants(ns + "Settings").Single().Element(ns + "Enabled")?.Value != "true")
+            if (!ValidateRegistrationXml(registered, destination))
                 throw new IOException("예약 작업 실행 구성 검증 실패");
             WriteShortcut(destination);
         },
@@ -141,6 +135,18 @@ public static class GuardTask
         () => { if (oldShortcut is null) File.Delete(ShortcutPath); else File.WriteAllBytes(ShortcutPath, oldShortcut); });
         store.Log("자동 유지 설치 완료: " + destination);
         return destination;
+    }
+
+    public static bool ValidateRegistrationXml(string text, string executable, string arguments = "--guard-once")
+    {
+        XNamespace ns = "http://schemas.microsoft.com/windows/2004/02/mit/task";
+        var xml = XDocument.Parse(text);
+        // Task Scheduler omits values equal to schema defaults in its normalized XML.
+        return xml.Descendants(ns + "Command").SingleOrDefault()?.Value == executable &&
+            xml.Descendants(ns + "Arguments").SingleOrDefault()?.Value == arguments &&
+            xml.Descendants(ns + "WorkingDirectory").SingleOrDefault()?.Value == Path.GetDirectoryName(executable) &&
+            (xml.Descendants(ns + "RunLevel").SingleOrDefault()?.Value ?? "LeastPrivilege") == "LeastPrivilege" &&
+            (xml.Descendants(ns + "Settings").SingleOrDefault()?.Element(ns + "Enabled")?.Value ?? "true") == "true";
     }
 
     internal static void CommitConfiguration(GuardStore store, GuardState state, Action activate, params Action[] rollback)
@@ -242,8 +248,7 @@ public static class GuardTask
         var full = Path.GetFullPath(command);
         var prefix = Path.GetFullPath(Path.Combine(store.Root, "guard-bin")) + Path.DirectorySeparatorChar;
         if (!full.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ||
-            task.Descendants(ns + "Arguments").SingleOrDefault()?.Value != "--guard-once" ||
-            task.Descendants(ns + "Settings").Single().Element(ns + "Enabled")?.Value != "true")
+            !ValidateRegistrationXml(xml, full))
             return "자동 실행 구성 오류 / 재설치 필요";
         using var file = File.OpenRead(full);
         var hash = Convert.ToHexString(SHA256.HashData(file));
