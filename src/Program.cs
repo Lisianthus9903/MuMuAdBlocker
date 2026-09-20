@@ -28,7 +28,7 @@ internal static class Program
             }
             catch (Exception ex)
             {
-                try { new GuardStore().Log("CLI 실패: " + ex.Message); } catch { }
+                try { new GuardStore().Log("CLI 실패: " + ex); } catch { }
                 return 1;
             }
         }

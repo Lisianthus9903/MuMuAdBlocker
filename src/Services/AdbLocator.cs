@@ -105,6 +105,11 @@ public static class AdbLocator
                 candidates.Add(Path.Combine(root, rel));
         foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
             if (Path.IsPathFullyQualified(dir)) candidates.Add(Path.Combine(dir, "adb.exe"));
+        return await FindFirstValidAsync(candidates, ct);
+    }
+
+    internal static async Task<string?> FindFirstValidAsync(IEnumerable<string> candidates, CancellationToken ct = default)
+    {
         foreach (var path in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
         {
             ct.ThrowIfCancellationRequested();

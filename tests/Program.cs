@@ -12,6 +12,7 @@ internal static class Program
         Console.OutputEncoding = new System.Text.UTF8Encoding(false);
         if (args.FirstOrDefault() == "--fixture-sleep") { await Task.Delay(15000); return 0; }
         if (args.FirstOrDefault() == "--fixture-echo") { Console.WriteLine(args[1]); Console.Error.WriteLine("진단"); return 0; }
+        if (args.FirstOrDefault() == "version") { Console.WriteLine("Android Debug Bridge version 1.0.41 (test fixture)"); return 0; }
         foreach (var (text, code, expected) in new (string, int, AppOpState)[] {
             ("SYSTEM_ALERT_WINDOW: ignore", 0, AppOpState.Ignore),
             ("  SYSTEM_ALERT_WINDOW: allow; time=+1s", 0, AppOpState.Allow),
@@ -223,6 +224,17 @@ internal static class Program
                 AtomicFile.Write(config, "{\"adb\":{\"host_port\":16448}}");
                 var ports = EndpointDiscovery.Find(new[] { store.Root }, new[] { "127.0.0.1:16416" });
                 Yes(ports.Contains("127.0.0.1:16448")); await Task.CompletedTask;
+            });
+        });
+        await Test("missing or invalid saved ADB falls through to a valid replacement executable", async () => {
+            await Temp(async store => {
+                Directory.CreateDirectory(store.Root);
+                var executable = Path.Combine(store.Root, OperatingSystem.IsWindows() ? "adb.exe" : "adb");
+                File.Copy(Environment.ProcessPath!, executable);
+                foreach (var file in new[] { "MuMuAdBlocker.Tests.dll", "MuMuAdBlocker.Tests.deps.json", "MuMuAdBlocker.Tests.runtimeconfig.json" })
+                    File.Copy(Path.Combine(AppContext.BaseDirectory, file), Path.Combine(store.Root, file));
+                var invalid = Path.Combine(store.Root, "broken.exe"); File.WriteAllText(invalid, "not an executable");
+                Eq(executable, await AdbLocator.FindFirstValidAsync(new[] { Path.Combine(store.Root, "deleted-adb.exe"), invalid, executable }));
             });
         });
         await Test("Task XML escapes paths, least privilege and minute interval without expiry", () => {

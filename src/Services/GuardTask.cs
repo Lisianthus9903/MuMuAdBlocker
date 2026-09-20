@@ -187,9 +187,11 @@ public static class GuardTask
             while (watch.Elapsed < TimeSpan.FromSeconds(20))
             {
                 Thread.Sleep(100);
-                if ((DateTime)((dynamic)task).LastRunTime > before && (int)((dynamic)task).State != 4)
+                var result = (int)((dynamic)task).LastTaskResult;
+                if ((DateTime)((dynamic)task).LastRunTime > before && (int)((dynamic)task).State == 3 &&
+                    result != 0x41301 && result != 0x41303)
                 {
-                    if ((int)((dynamic)task).LastTaskResult != 0) throw new IOException("설치 사본 예약 실행 실패");
+                    if (result != 0) throw new IOException($"설치 사본 예약 실행 실패: 0x{result:X8}");
                     return;
                 }
             }

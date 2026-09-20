@@ -37,7 +37,10 @@ function Run-Exe([string]$Path, [string]$Argument, [int]$Expected = 0) {
         Assert-NoGuardWindow
         if ((Get-Date) -ge $deadline) { $p.Kill(); throw "CLI timed out: $Argument" }
     }
-    if ($p.ExitCode -ne $Expected) { throw "CLI $Argument returned $($p.ExitCode), expected $Expected" }
+    if ($p.ExitCode -ne $Expected) {
+        if (Test-Path -LiteralPath (Join-Path $root 'guard.log')) { Get-Content -LiteralPath (Join-Path $root 'guard.log') -Tail 35 | Write-Output }
+        throw "CLI $Argument returned $($p.ExitCode), expected $Expected"
+    }
 }
 function Read-Status { Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json }
 function Wait-TaskRun([datetime]$AfterRun, [datetimeoffset]$AfterCheck, [int]$Seconds) {
@@ -159,6 +162,7 @@ try {
     $evidence.Result = 'passed'
 }
 finally {
+    if (Test-Path -LiteralPath (Join-Path $root 'guard.log')) { $evidence.GuardLog = @(Get-Content -LiteralPath (Join-Path $root 'guard.log') -Tail 50) }
     $evidence | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $EvidencePath -Encoding utf8
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $shortcut -PathType Leaf) { Remove-Item -LiteralPath $shortcut -Force }
