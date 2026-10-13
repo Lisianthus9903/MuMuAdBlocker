@@ -16,14 +16,29 @@ public sealed class MuMuManager
     public const string AppOpName = "SYSTEM_ALERT_WINDOW";
     private readonly IAdbRunner _adb;
     private readonly Action<string> _log;
-    public MuMuManager(IAdbRunner adb, Action<string> log) { _adb = adb; _log = log; }
+    private readonly Func<CancellationToken, Task<IReadOnlyList<string>>> _hostInventory;
+    public MuMuManager(IAdbRunner adb, Action<string> log,
+        Func<CancellationToken, Task<IReadOnlyList<string>>>? hostInventory = null)
+    {
+        _adb = adb; _log = log;
+        _hostInventory = hostInventory ?? (adb is AdbRunner ? MuMuHostInventory.ReadAsync :
+            _ => Task.FromResult<IReadOnlyList<string>>(Array.Empty<string>()));
+    }
+
+    public async Task<IReadOnlyList<string>> SelectTargetSerialsAsync(string devicesOutput, CancellationToken ct = default)
+    {
+        var hosts = await _hostInventory(ct);
+        // Modern MuMu publishes canonical endpoints. Do not double-count its emulator-N/7555 aliases.
+        // Include disconnected advertised endpoints so a connection failure cannot look successful.
+        return hosts.Count > 0 ? hosts : ParseDeviceSerials(devicesOutput).ToArray();
+    }
 
     public async Task<List<MuMuDevice>> FindMuMuDevicesAsync(CancellationToken ct = default)
     {
         var r = await _adb.RunAsync(new[] { "devices" }, ct: ct);
         if (!r.Success) throw new InvalidOperationException("adb devices 실패: " + r.Combined.Trim());
         var result = new List<MuMuDevice>();
-        foreach (var serial in ParseDeviceSerials(r.StdOut))
+        foreach (var serial in await SelectTargetSerialsAsync(r.StdOut, ct))
         {
             ct.ThrowIfCancellationRequested();
             try { var d = await InspectAsync(serial, ct); if (d is not null) result.Add(d); }
@@ -44,7 +59,13 @@ public sealed class MuMuManager
         var path = await Shell(serial, $"pm path --user 0 {StorePackage}", ct);
         if (!path.Success || !Regex.IsMatch(path.StdOut, @"(?m)^package:/")) return null;
         var props = await Shell(serial, "getprop", ct);
-        if (!props.Success || !IsEmulator(props.StdOut)) return null;
+        if (!props.Success) return null;
+        if (!IsEmulator(props.StdOut))
+        {
+            var endpoint = EndpointDiscovery.Normalize(serial);
+            // Re-read live host evidence on each inspection, including immediately before a write/restore.
+            if (endpoint is null || !(await _hostInventory(ct)).Contains(endpoint, StringComparer.Ordinal)) return null;
+        }
         var package = await Shell(serial, $"dumpsys package {StorePackage}", ct);
         var name = Regex.Match(package.StdOut, @"versionName=(\S+)");
         var code = Regex.Match(package.StdOut, @"versionCode=(\d+)");

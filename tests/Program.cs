@@ -10,6 +10,19 @@ internal static class Program
     public static async Task<int> Main(string[] args)
     {
         Console.OutputEncoding = new System.Text.UTF8Encoding(false);
+        if (args.FirstOrDefault() == "--inspect-live")
+        {
+            // Explicit read-only field probe; never run the isolated installation test on a user's PC.
+            if (!AdbLocator.IsMuMuRunning()) { Console.WriteLine("MuMu is not running"); return 2; }
+            var path = await AdbLocator.FindAsync(null);
+            if (path is null) { Console.WriteLine("Existing ADB cannot be safely accessed"); return 2; }
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            var hosts = await MuMuHostInventory.ReadAsync(deadline.Token);
+            var devices = await new MuMuManager(new AdbRunner(path), Console.WriteLine).FindMuMuDevicesAsync(deadline.Token);
+            Console.WriteLine(JsonSerializer.Serialize(new { AdbPath = path, Hosts = hosts, Devices = devices },
+                new JsonSerializerOptions { WriteIndented = true }));
+            return hosts.Count > 0 && devices.Count == hosts.Count ? 0 : 2;
+        }
         if (args.FirstOrDefault() == "--fixture-sleep") { await Task.Delay(15000); return 0; }
         if (args.FirstOrDefault() == "--fixture-echo") { Console.WriteLine(args[1]); Console.Error.WriteLine("진단"); return 0; }
         if (args.FirstOrDefault() == "version") { Console.WriteLine("Android Debug Bridge version 1.0.41 (test fixture)"); return 0; }
@@ -51,6 +64,67 @@ internal static class Program
         await Test("emulator identity", () => {
             Yes(MuMuManager.IsEmulator("[ro.product.model]: [MuMu]") && MuMuManager.IsEmulator("[ro.kernel.qemu]: [1]"));
             Yes(!MuMuManager.IsEmulator("[ro.product.model]: [Pixel 9]\n[ro.kernel.qemu]: [0]")); return Task.CompletedTask; });
+
+        foreach (var brand in new[] { "Samsung", "Asus", "Huawei", "Tcl" })
+            await Test("host-confirmed " + brand + " model: backup, repair and restore", async () => {
+                await Temp(async store => {
+                    var adb = new FakeAdb(); var vm = adb.Add("127.0.0.1:16448", AppOpState.Default);
+                    vm.Props = $"[ro.hardware]: [{brand}]\n[ro.product.model]: [{brand} phone]";
+                    Yes(!MuMuManager.IsEmulator(vm.Props));
+                    var manager = new MuMuManager(adb, _ => { }, _ => Task.FromResult(adb.Serials));
+                    var state = new GuardState { Enabled = true }; var engine = new ProtectionGuard(manager, store);
+                    adb.BeforeSet = () => Eq(AppOpState.Default, store.Load().Backups.Values.Single().OriginalMode);
+                    var first = await engine.ReconcileAsync(adb.Serials, state);
+                    Eq(1, first.Verified); Eq(1, first.Repaired); Eq(0, first.Failed); Eq(AppOpState.Ignore, vm.Mode);
+                    Eq(0, (await engine.ReconcileAsync(adb.Serials, state)).Repaired); Eq(1, adb.Sets);
+                    state.Enabled = false; Eq(1, await engine.RestoreAsync(state)); Eq(AppOpState.Default, vm.Mode);
+                });
+            });
+        await Test("host evidence missing, wrong endpoint, removed before write or missing Store: no mutation", async () => {
+            var adb = new FakeAdb(); var vm = adb.Add("127.0.0.1:16448", AppOpState.Default); vm.Emulator = false;
+            IReadOnlyList<string> hosts = Array.Empty<string>();
+            var manager = new MuMuManager(adb, _ => { }, _ => Task.FromResult(hosts));
+            Yes(await manager.InspectAsync(adb.Serials[0]) is null);
+            hosts = new[] { "127.0.0.1:16384" }; Yes(await manager.InspectAsync(adb.Serials[0]) is null);
+            hosts = adb.Serials; Yes(await manager.InspectAsync(adb.Serials[0]) is not null);
+            hosts = Array.Empty<string>(); Yes(!(await manager.SetAppOpAsync(adb.Serials[0], "ignore")).ok);
+            hosts = adb.Serials; vm.Store = false; Yes(!(await manager.SetAppOpAsync(adb.Serials[0], "ignore")).ok);
+            Eq(0, adb.Sets);
+        });
+        await Test("canonical manager endpoints exclude duplicate aliases and retain disconnected VM failures", async () => {
+            await Temp(async store => {
+                var adb = new FakeAdb(); adb.Add("127.0.0.1:16384", AppOpState.Ignore).Emulator = false;
+                IReadOnlyList<string> hosts = new[] { "127.0.0.1:16384", "127.0.0.1:16448" };
+                var manager = new MuMuManager(adb, _ => { }, _ => Task.FromResult(hosts));
+                var targets = await manager.SelectTargetSerialsAsync("127.0.0.1:16384 device\nemulator-5554 device\n127.0.0.1:7555 device\nUSB123 device");
+                Eq(string.Join(',', hosts), string.Join(',', targets));
+                var status = await new ProtectionGuard(manager, store).ReconcileAsync(targets, new());
+                Eq(1, status.Verified); Eq(1, status.Failed); Eq(0, adb.Sets);
+            });
+        });
+        await Test("running manager proof rejects stale, incomplete, foreign, remote and malformed rows", () => {
+            string Row(string host = "127.0.0.1", int port = 16448, int pid = 42, bool started = true, string source = "rpc") =>
+                JsonSerializer.Serialize(new { index = "2", error_code = 0, is_android_started = started,
+                    is_process_started = started, info_source = source, adb_host_ip = host, adb_port = port, pid });
+            Eq("127.0.0.1:16448", MuMuHostInventory.ParseRunning(Row(), id => id == 42).Single());
+            foreach (var json in new[] { Row("192.168.1.1"), Row(port: 0), Row(port: 65536), Row(pid: 7),
+                Row(started: false), Row(source: "local"), "{}", "{", Row().Replace("\"error_code\":0", "\"error_code\":1"),
+                Row().Replace("\"pid\":42", "\"pid\":\"42\"") })
+                Eq(0, MuMuHostInventory.ParseRunning(json, id => id == 42).Count);
+            var mixed = "[" + Row().Replace("\"pid\":42", "\"pid\":null") + "," + Row("::1") + "]";
+            Eq("[::1]:16448", MuMuHostInventory.ParseRunning(mixed, id => id == 42).Single());
+            Eq(0, MuMuHostInventory.ParseRunning(Row(), _ => false).Count);
+            return Task.CompletedTask;
+        });
+        await Test("manager PID must belong to an instance in the same installation", () => {
+            var root = Path.Combine(Path.GetTempPath(), "MuMuHostIdentityFixture");
+            var manager = Path.Combine(root, "nx_main", "MuMuManager.exe");
+            Yes(MuMuHostInventory.IsInstancePath(manager, Path.Combine(root, "nx_device", "12.0", "shell", "MuMuNxDevice.exe")));
+            Yes(!MuMuHostInventory.IsInstancePath(manager, Path.Combine(root + "-other", "MuMuNxDevice.exe")));
+            Yes(!MuMuHostInventory.IsInstancePath(manager, Path.Combine(root, "nx_main", "MuMuNxMain.exe")));
+            Yes(!MuMuHostInventory.IsInstancePath(manager, Path.Combine(root, "adb.exe")));
+            return Task.CompletedTask;
+        });
 
         await Test("atomic state, corrupt state fails closed, exclusive lock", async () => {
             await Temp(async store => {
@@ -339,6 +413,7 @@ internal sealed class FakeAdb : IAdbRunner
         public AppOpState Mode; public string Version = "6.4.7"; public bool Store = true, Emulator = true;
         public string Id = "0123456789abcdef";
         public string Installed = "2026-09-19 12:00:00";
+        public string? Props;
     }
     private readonly Dictionary<string, Vm> _vms = new();
     public IReadOnlyList<string> Serials => _vms.Keys.ToArray();
@@ -356,7 +431,7 @@ internal sealed class FakeAdb : IAdbRunner
         if (!_vms.TryGetValue(a[1], out var vm)) return Task.FromResult(new ProcessResult(1, "", "offline"));
         var cmd = a[3];
         if (cmd.StartsWith("pm path")) return Ok(vm.Store ? "package:/system/app/MuMuStore.apk" : "");
-        if (cmd == "getprop") return Ok(vm.Emulator ? "[ro.kernel.qemu]: [1]\n[ro.product.model]: [MuMu]" : "[ro.product.model]: [Pixel 9]");
+        if (cmd == "getprop") return Ok(vm.Props ?? (vm.Emulator ? "[ro.kernel.qemu]: [1]\n[ro.product.model]: [MuMu]" : "[ro.product.model]: [Pixel 9]"));
         if (cmd.StartsWith("dumpsys package")) return Ok("versionName=" + vm.Version + "\nversionCode=42\nuserId=10001\nfirstInstallTime=" + vm.Installed);
         if (cmd.Contains("appops get")) return Ok(vm.Mode == AppOpState.Unknown ? "Error: unknown future format" : "SYSTEM_ALERT_WINDOW: " + vm.Mode.ToString().ToLowerInvariant());
         if (cmd.Contains("appops set"))
